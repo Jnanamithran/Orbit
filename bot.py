@@ -107,4 +107,4 @@ async def setreaction(interaction: discord.Interaction, emoji: str):
         await interaction.response.send_message("No message found to react to. Use /message to send a new one.", ephemeral=True)
 
 # Replace with your bot token
-bot.run("MTMxNTI2NzAyNDI2Nzc3NjAwMA.GcXFpm.z73k5zz4Whu-3kU_6soJzSEfehaR9mNnzqPaM4")
+bot.run("YOUR BOT TOKEN")
