@@ -4,6 +4,7 @@ from discord import app_commands
 import aiohttp
 import os
 import asyncio
+import datetime
 from datetime import datetime, timedelta
 import pytz
 from dotenv import load_dotenv
@@ -90,6 +91,49 @@ async def on_ready():
             await log_channel.send(log_message)
         else:
             print("Log channel not found!")
+            
+@bot.tree.command(name="activity", description="Change the bot's activity")
+@app_commands.describe(
+    activity_type="The type of activity (playing, listening, watching, streaming)", 
+    activity_name="The name of the activity",
+    stream_url="The URL for streaming (required for 'streaming' activity)"
+)
+async def set_activity(interaction: discord.Interaction, activity_type: str, activity_name: str, stream_url: str = None):
+    activity = None
+
+    # Match the activity types
+    if activity_type.lower() == "playing":
+        activity = discord.Game(name=activity_name)
+    elif activity_type.lower() == "listening":
+        activity = discord.Activity(type=discord.ActivityType.listening, name=activity_name)
+    elif activity_type.lower() == "watching":
+        activity = discord.Activity(type=discord.ActivityType.watching, name=activity_name)
+    elif activity_type.lower() == "streaming":
+        if not stream_url:
+            await interaction.response.send_message(
+                "You must provide a streaming URL for the 'streaming' activity type.", ephemeral=True
+            )
+            return
+        activity = discord.Streaming(name=activity_name, url=stream_url)
+    else:
+        await interaction.response.send_message(
+            "Invalid activity type! Use 'playing', 'listening', 'watching', or 'streaming'.", 
+            ephemeral=True
+        )
+        return
+
+    # Update the bot's presence
+    try:
+        await bot.change_presence(activity=activity)
+        await interaction.response.send_message(
+            f"Bot activity changed to {activity_type} {activity_name}!", ephemeral=True
+        )
+
+        # Log the activity change
+        await log_action(f"{interaction.user} changed the bot's activity to {activity_type} {activity_name}.", interaction.guild, interaction.channel)
+
+    except Exception as e:
+        await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
 
 # Event that triggers when a member joins
 @bot.event
@@ -267,16 +311,51 @@ async def send_image(interaction: discord.Interaction, channel: discord.TextChan
         await log_action(f"Image sent to {channel.mention} by {interaction.user} with caption: {caption}", interaction.guild, interaction.channel)
     except Exception as e:
         await interaction.response.send_message(f"Error sending image: {e}", ephemeral=True)
+# Slash command to start a timer based on a target time
+@bot.tree.command(name="starttimer", description="Starts a timer that will send a message when the target time (hr:min) is reached")
+@app_commands.describe(hour="The hour (24-hour format) of the target time", minute="The minute of the target time", message="The message to send", image_url="Optional image URL or file path to include in the message")
+async def start_timer(interaction: discord.Interaction, hour: int, minute: int, message: str, image_url: str = None):
+    # Defer the response to avoid timeout
+    await interaction.response.defer()
 
-# Command to start a timer
-@bot.tree.command(name="starttimer", description="Start a timer for a specified duration")
-@app_commands.describe(duration="Duration in minutes for the timer")
-async def start_timer(interaction: discord.Interaction, duration: int):
-    await interaction.response.send_message(f"Timer started for {duration} minutes.", ephemeral=True)
+    # Get the current time
+    now = datetime.now()
 
-    await log_action(f"Timer started for {duration} minutes by {interaction.user}.", interaction.guild, interaction.channel)
+    # Set the target time for today
+    target_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
-    await asyncio.sleep(duration * 60)  # Convert minutes to seconds
-    await interaction.followup.send(f"{interaction.user.mention}, the timer for {duration} minutes has ended.")
+    # If the target time has already passed today, set the target time for the next day
+    if target_time < now:
+        target_time += timedelta(days=1)
+
+    # Calculate the time difference
+    time_diff = target_time - now
+
+    # Inform the user that the timer has been set
+    await interaction.followup.send(f"Timer set for {target_time.strftime('%H:%M')}!", ephemeral=True)
+
+    # Log the timer setup action
+    await log_action(f"Timer set for {target_time.strftime('%H:%M')} by {interaction.user}. Message: {message}", interaction.guild, interaction.channel)
+
+    # Wait until the target time is reached
+    await asyncio.sleep(time_diff.total_seconds())
+
+    # Send the message
+    await interaction.channel.send(message)
+
+    # If an image URL or file path is provided
+    if image_url:
+        if os.path.isfile(image_url):  # If it's a local file
+            await interaction.channel.send(file=discord.File(image_url))
+        else:  # If it's a URL
+            await interaction.channel.send(image_url)  # Just send the URL as a separate message
+    else:
+        await interaction.channel.send("No image provided.")
+
+    # Log the action after the message and image are sent
+    if image_url:
+        await log_action(f"Timer triggered by {interaction.user}. Message sent: {message}. Image: {image_url}", interaction.guild, interaction.channel)
+    else:
+        await log_action(f"Timer triggered by {interaction.user}. Message sent: {message}. No image provided.", interaction.guild, interaction.channel)
 
 bot.run(TOKEN)
