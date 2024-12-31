@@ -149,7 +149,7 @@ async def on_member_join(member: discord.Member):
                 "We're glad to have you here! 🎉\n"
                 "Enjoy your stay and explore the server!"
             )
-
+            await member.send(f"Welcome {member.mention} to {member.guild.name} \n Have fun in explring the server \n Any doubt dont frgt to contact admins.👻")
             # Log the action of sending the welcome message
             await log_action(f"Sent welcome message to {member.mention} in {welcome_channel.mention}.", member.guild, welcome_channel)
 
@@ -276,18 +276,17 @@ async def verify(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message("An error occurred while assigning the role. Please contact an admin.", ephemeral=True)
 
-# Command to send a custom message to a channel
-@bot.tree.command(name="message", description="Send a custom message to a specified channel")
-@app_commands.describe(channel="The channel to send the message to", message="The message to send")
-async def send_message(interaction: discord.Interaction, channel: discord.TextChannel, message: str):
-    try:
-        await channel.send(content=message)
-        await interaction.response.send_message(f"Message sent to {channel.mention}!", ephemeral=True)
-
-        # Log the message sent action
-        await log_action(f"Message sent to {channel.mention} by {interaction.user}: {message}", interaction.guild, interaction.channel)
-    except Exception as e:
-        await interaction.response.send_message(f"Error sending message: {e}", ephemeral=True)
+@bot.tree.command(name="message", description="Send a message to a selected channel")
+async def message(interaction: discord.Interaction, channel: discord.TextChannel, message_content: str):
+    message_content = message_content.replace(r"\n", "\n")
+    # Send the user-provided message to the selected channel
+    await channel.send(message_content)
+    
+    # Send a response to the user only (ephemeral)
+    await interaction.response.send_message(f"Message sent to {channel.mention}!", ephemeral=True)
+    
+    # Log the action after sending the message
+    await log_action(f"Message sent to {channel.mention} by {interaction.user}. Content: {message_content}", interaction.guild, interaction.channel)
 
 # Command to send an image to a channel
 @bot.tree.command(name="image", description="Send an image to a specified channel using a URL")
@@ -311,7 +310,7 @@ async def send_image(interaction: discord.Interaction, channel: discord.TextChan
         await log_action(f"Image sent to {channel.mention} by {interaction.user} with caption: {caption}", interaction.guild, interaction.channel)
     except Exception as e:
         await interaction.response.send_message(f"Error sending image: {e}", ephemeral=True)
-# Slash command to start a timer based on a target time
+
 @bot.tree.command(name="starttimer", description="Starts a timer that will send a message when the target time (hr:min) is reached")
 @app_commands.describe(hour="The hour (24-hour format) of the target time", minute="The minute of the target time", message="The message to send", image_url="Optional image URL or file path to include in the message")
 async def start_timer(interaction: discord.Interaction, hour: int, minute: int, message: str, image_url: str = None):
@@ -331,16 +330,19 @@ async def start_timer(interaction: discord.Interaction, hour: int, minute: int, 
     # Calculate the time difference
     time_diff = target_time - now
 
-    # Inform the user that the timer has been set
+    # Send an ephemeral message to inform the user that the timer has been set (only visible to the user)
     await interaction.followup.send(f"Timer set for {target_time.strftime('%H:%M')}!", ephemeral=True)
 
-    # Log the timer setup action
+    # Log the timer setup action (this will be visible to you or admins if you want)
     await log_action(f"Timer set for {target_time.strftime('%H:%M')} by {interaction.user}. Message: {message}", interaction.guild, interaction.channel)
 
     # Wait until the target time is reached
     await asyncio.sleep(time_diff.total_seconds())
+    
+    # Ensure line breaks in the message are properly handled
+    message = message.replace(r"\n", "\n")
 
-    # Send the message
+    # Send the message to the channel (this will be visible to everyone)
     await interaction.channel.send(message)
 
     # If an image URL or file path is provided
@@ -350,12 +352,15 @@ async def start_timer(interaction: discord.Interaction, hour: int, minute: int, 
         else:  # If it's a URL
             await interaction.channel.send(image_url)  # Just send the URL as a separate message
     else:
-        await interaction.channel.send("No image provided.")
+        # Use followup.send() for an ephemeral message about no image
+        await interaction.followup.send("No image provided.", ephemeral=True)
 
     # Log the action after the message and image are sent
     if image_url:
         await log_action(f"Timer triggered by {interaction.user}. Message sent: {message}. Image: {image_url}", interaction.guild, interaction.channel)
     else:
         await log_action(f"Timer triggered by {interaction.user}. Message sent: {message}. No image provided.", interaction.guild, interaction.channel)
+
+
 
 bot.run(TOKEN)
