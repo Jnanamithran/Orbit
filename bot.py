@@ -55,32 +55,27 @@ def init_db():
     
 # Function to set guild settings (welcome channel, verify channel, verify role)
 def set_guild_settings(guild_id, welcome_channel_id, verify_channel_id, verify_role_id):
+    print(f"Saving settings: guild_id={guild_id}, welcome_channel_id={welcome_channel_id}, verify_channel_id={verify_channel_id}, verify_role_id={verify_role_id}")
     conn = sqlite3.connect('bot_data.db')
     c = conn.cursor()
-
-    # Insert or update the settings for the guild
     c.execute('''
-        INSERT INTO settings (guild_id, welcome_channel_id, verify_channel_id, verify_role_id)
+        INSERT OR REPLACE INTO settings (guild_id, welcome_channel_id, verify_channel_id, verify_role_id)
         VALUES (?, ?, ?, ?)
-        ON CONFLICT(guild_id) 
-        DO UPDATE SET welcome_channel_id = ?, verify_channel_id = ?, verify_role_id = ?
-    ''', (guild_id, welcome_channel_id, verify_channel_id, verify_role_id, welcome_channel_id, verify_channel_id, verify_role_id))
-
-    # Commit the changes and close the connection
+    ''', (guild_id, welcome_channel_id, verify_channel_id, verify_role_id))
     conn.commit()
     conn.close()
 
 # Function to get guild settings
 def get_guild_settings(guild_id):
+    print(f"Fetching settings for guild_id={guild_id}")
     conn = sqlite3.connect('bot_data.db')
     c = conn.cursor()
-
-    # Fetch the settings for the given guild
     c.execute('SELECT * FROM settings WHERE guild_id = ?', (guild_id,))
     settings = c.fetchone()
-
+    print(f"Retrieved settings: {settings}")
     conn.close()
     return settings
+
 
 
 # Function to log actions to a specific server and channel
@@ -201,6 +196,9 @@ async def on_member_join(member: discord.Member):
             await member.send(f"Welcome {member.mention} to {member.guild.name} \n Have fun in exploring the server \n Any doubt dont frgt to contact admins.👻")
             # Log the action of sending the welcome message
             await log_action(f"Sent welcome message to {member.mention} in {welcome_channel.mention}.", member.guild, welcome_channel)
+async def on_ready():
+    await bot.tree.sync()
+    print(f"Bot is ready and commands synced!")
 
 # Command to set welcome channel
 @bot.tree.command(name="setwelcomechannel", description="Set the channel for welcome messages.")
@@ -231,7 +229,7 @@ async def set_welcome_channel_error(interaction: discord.Interaction, error):
 # Help command
 @bot.tree.command(name="help", description="Show available commands.")
 async def help_command(interaction: discord.Interaction):
-    await interaction.response.send_message("Available commands: /starttimer, /sourcecode, /hello, /activity, /news, /image, /message, etc.")
+    await interaction.response.send_message("Available commands:/setwelcomechannel,/setverifyrole,setverifychannel, /starttimer, /sourcecode, /hello, /activity, /news, /image, /message, etc.")
     await log_action(f"{interaction.user} accessed the help menu.", interaction.guild, interaction.channel)
 
 # Command to get the bot's source code
@@ -289,39 +287,30 @@ async def set_verify_role(interaction: discord.Interaction, role: discord.Role):
     # Log the role setting action
     await log_action(f"Role set to {role.mention} by {interaction.user}.", interaction.guild, interaction.channel)
 
-# Command to view current settings
-@bot.tree.command(name="viewsettings", description="View the current channel and role settings")
-async def view_settings(interaction: discord.Interaction):
-    guild_id = interaction.guild_id
-    settings = guild_settings.get(guild_id, {})
-    channel_id = settings.get('channel_id', 'Not set')
-    role_id = settings.get('role_id', 'Not set')
-    await interaction.response.send_message(
-        f"Current settings:\nChannel: <#{channel_id}>\nRole: <@&{role_id}>",
-        ephemeral=True
-    )
-
-    # Log the view settings action
-    await log_action(f"Settings viewed by {interaction.user}.", interaction.guild, interaction.channel)
-
-@bot.tree.command(name="verify", description="Verify to get the custom role")
+@bot.tree.command(name="verify", description="Verify yourself.")
 async def verify(interaction: discord.Interaction):
-    guild = interaction.guild
-    member = interaction.user
-
-    settings = get_guild_settings(guild.id)
-    if not settings or not settings[3]:
-        await interaction.response.send_message("The verification role has not been set. Please contact an admin.", ephemeral=True)
+    settings = get_guild_settings(interaction.guild.id)
+    print(f"Verify command settings: {settings}")
+    if not settings or not settings[2]:
+        await interaction.response.send_message("Verification channel is not set.", ephemeral=True)
         return
 
-    role = discord.utils.get(guild.roles, id=settings[3])
-    if role:
-        await member.add_roles(role)
-        await interaction.response.send_message(f"You've been verified and given the {role.name} role!", ephemeral=True)
-    else:
-        await interaction.response.send_message("Role not found. Please contact an admin.", ephemeral=True)
+    verify_channel_id = settings[2]
+    if interaction.channel.id != verify_channel_id:
+        await interaction.response.send_message(f"This command can only be used in the verify channel.", ephemeral=True) 
+        return
 
-        await log_action(f"{interaction.user} has been verified and assigned the {role.name} role.", guild, interaction.channel)
+    # Verification logic...
+    verify_role_id = settings[3]
+    verify_role = interaction.guild.get_role(verify_role_id)
+    if verify_role:
+        await interaction.user.add_roles(verify_role)
+        await interaction.response.send_message("You have been verified!", ephemeral=True)
+
+        # Log action with the correct guild object
+        await log_action(f"{interaction.user} has been verified and assigned the {verify_role.name} role.", interaction.guild, interaction.channel)
+    else:
+        await interaction.response.send_message("Verification role is not set.", ephemeral=True)
 
 @bot.tree.command(name="message", description="Send a message to a selected channel")
 async def message(interaction: discord.Interaction, channel: discord.TextChannel, message_content: str):
