@@ -92,15 +92,16 @@ async def log_action(message: str, guild, channel):
             ist_time = datetime.now(IST)
             timestamp = ist_time.strftime('%Y-%m-%d %H:%M:%S')
 
-            log_message = (
-                f"**[{timestamp}]**\n"
-                f"**Server**: {guild.name}\n"
-                f"**Channel**: #{channel.name}\n"
-                f"**Action**: {message}\n"
-            )
+            # Create an embed for the log
+            embed = discord.Embed(title="Log Entry", color=discord.Color.blue(), timestamp=ist_time)
+            embed.add_field(name="Server", value=guild.name, inline=False)
+            embed.add_field(name="Channel", value=f"#{channel.name}", inline=False)
+            embed.add_field(name="Action", value=message, inline=False)
+            embed.set_footer(text="Logged at")
+
             try:
-                # Send the log message to the log channel in the target guild
-                await log_channel.send(log_message)
+                # Send the embed to the log channel in the target guild
+                await log_channel.send(embed=embed)
             except discord.Forbidden:
                 print(f"Bot doesn't have permission to send messages in the log channel of {target_guild.name}.")
         else:
