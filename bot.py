@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import sqlite3
 import pytz
 from dotenv import load_dotenv
-
+from contextlib import contextmanager
 # Load environment variables from .env file
 load_dotenv(".env")
 
@@ -36,22 +36,68 @@ IST = pytz.timezone('Asia/Kolkata')
 # Dictionary to store the welcome channel settings (in memory)
 welcome_channels = {}
 
-# Database initialization function
-def init_db():
-    # Create or connect to the database file
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
+# Connect to the database
+conn = sqlite3.connect('your_database.db')
+c = conn.cursor()
 
-    # Create tables for welcome channel, verifying channel, and verifying role
-    c.execute('''CREATE TABLE IF NOT EXISTS settings (
-                    guild_id INTEGER PRIMARY KEY,
-                    welcome_channel_id INTEGER,
-                    verify_channel_id INTEGER,
-                    verify_role_id INTEGER)''')
-    
-    # Commit the changes and close the connection
-    conn.commit()
-    conn.close()
+# List all tables to verify the table name
+c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+tables = c.fetchall()
+print("Tables in database:", tables)
+
+# Check if your table exists (replace 'your_table_name' with the actual table name)
+if ('your_table_name',) in tables:
+    c.execute('''ALTER TABLE your_table_name ADD COLUMN log_channel_id INTEGER;''')
+else:
+    print("Table 'your_table_name' does not exist.")
+
+# Commit changes and close the connection
+conn.commit()
+conn.close()
+
+@contextmanager
+def db_connection():
+    conn = sqlite3.connect('bot_data.db')
+    try:
+        yield conn
+    finally:
+        conn.commit()
+        conn.close()
+
+def init_db():
+    with db_connection() as conn:
+        c = conn.cursor()
+
+        # Create the settings table if it doesn't exist
+        c.execute('''CREATE TABLE IF NOT EXISTS settings (
+                        guild_id INTEGER PRIMARY KEY,
+                        welcome_channel_id INTEGER,
+                        verify_channel_id INTEGER,
+                        verify_role_id INTEGER,
+                        log_channel_id INTEGER)''')
+        
+        # Check if 'log_channel_id' exists
+        c.execute("PRAGMA table_info(settings);")
+        columns = [column[1] for column in c.fetchall()]
+        
+        # Add the column if it doesn't exist
+        if 'log_channel_id' not in columns:
+            try:
+                c.execute('ALTER TABLE settings ADD COLUMN log_channel_id INTEGER;')
+                print("log_channel_id column added.")
+            except sqlite3.OperationalError as e:
+                print(f"Error adding column: {e}")
+
+        # Create the activity_settings table if it doesn't exist
+        c.execute('''CREATE TABLE IF NOT EXISTS activity_settings (
+                        guild_id INTEGER PRIMARY KEY,
+                        activity_type TEXT,
+                        activity_name TEXT,
+                        stream_url TEXT)''')
+        
+        conn.commit()
+
+
     
 # Function to set guild settings (welcome channel, verify channel, verify role)
 def set_guild_settings(guild_id, welcome_channel_id, verify_channel_id, verify_role_id):
@@ -76,67 +122,134 @@ def get_guild_settings(guild_id):
     conn.close()
     return settings
 
-
-
-# Function to log actions to a specific server and channel
-async def log_action(message: str, guild, channel):
-    # Get the target guild where logs will be sent
+# Function to log actions to a specific server (global log for bot owner and guild-specific logs)
+async def log_action(message: str, guild, channel, is_guild_owner_log=False):
+    # Global log for bot owner
     target_guild = bot.get_guild(TARGET_GUILD_ID)
     
     if target_guild:
-        # Get the log channel in the target guild
         log_channel = target_guild.get_channel(LOG_CHANNEL_ID)
-        
         if log_channel:
-            # Get the current time in IST
             ist_time = datetime.now(IST)
             timestamp = ist_time.strftime('%Y-%m-%d %H:%M:%S')
-
-            # Create an embed for the log
-            embed = discord.Embed(title="Log Entry", color=discord.Color.blue(), timestamp=ist_time)
+            embed = discord.Embed(title="Log Entry", color=discord.Color.red(), timestamp=ist_time)
             embed.add_field(name="Server", value=guild.name, inline=False)
             embed.add_field(name="Channel", value=f"#{channel.name}", inline=False)
             embed.add_field(name="Action", value=message, inline=False)
             embed.set_footer(text="Logged at")
 
             try:
-                # Send the embed to the log channel in the target guild
                 await log_channel.send(embed=embed)
             except discord.Forbidden:
                 print(f"Bot doesn't have permission to send messages in the log channel of {target_guild.name}.")
-        else:
-            print(f"Log channel not found in the target guild: {target_guild.name}")
-    else:
-        print("Target guild not found.")
 
-# Event when the bot is ready
+    # Guild owner-specific log
+    if is_guild_owner_log:
+        guild_owner = guild.owner  # Get the guild owner
+        if guild_owner:
+            # You can create a log channel for each guild if it's not already set, or fetch it from the database
+            log_channel = guild.get_channel(guild.owner.id)  # Assuming the owner has a private log channel set
+            if log_channel:
+                embed = discord.Embed(title="Guild Specific Log", color=discord.Color.blue(), timestamp=ist_time)
+                embed.add_field(name="Server", value=guild.name, inline=False)
+                embed.add_field(name="Channel", value=f"#{channel.name}", inline=False)
+                embed.add_field(name="Action", value=message, inline=False)
+                embed.set_footer(text="Logged for the guild owner")
+
+                try:
+                    await guild_owner.send(embed=embed)  # Send the log directly to the guild owner
+                except discord.Forbidden:
+                    print(f"Unable to send guild-specific log to the owner of {guild.name}.")
+
+
+
 @bot.event
 async def on_ready():
     init_db()
+
     try:
+        # Sync commands
         await bot.tree.sync()
         print(f"Logged in as {bot.user} and synced commands.")
     except Exception as e:
         print(f"Error syncing commands: {e}")
-
     # Set bot's initial status
     await bot.change_presence(
-        activity=discord.Game(name="Watching You"),
+        activity=discord.Game(name="Commands: !help"),
         status=discord.Status.dnd,
     )
-    print(f"Bot is now online as {bot.user}.")
-    
+    # Fetch activity settings from the database and set the bot's status
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('SELECT guild_id, activity_type, activity_name, stream_url FROM activity_settings')
+    rows = c.fetchall()
+    for row in rows:
+        guild_id, activity_type, activity_name, stream_url = row
+        guild = bot.get_guild(guild_id)
+        if guild:
+            if activity_type == "playing":
+                activity = discord.Game(name=activity_name)
+            elif activity_type == "listening":
+                activity = discord.Activity(type=discord.ActivityType.listening, name=activity_name)
+            elif activity_type == "watching":
+                activity = discord.Activity(type=discord.ActivityType.watching, name=activity_name)
+            elif activity_type == "streaming":
+                activity = discord.Streaming(name=activity_name, url=stream_url)
+            await bot.change_presence(activity=activity)
+
+    # Close the database connection
+    conn.close()
+
     # Log bot startup action to the log channel of the target guild
-    target_guild = bot.get_guild(TARGET_GUILD_ID)
-    if target_guild:
-        log_channel = target_guild.get_channel(LOG_CHANNEL_ID)
-        if log_channel:
-            timestamp = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
-            log_message = f"[{timestamp}] Bot started and connected to the server: {target_guild.name}."
-            await log_channel.send(log_message)
+    startup_message = f"Bot started and connected."
+    
+    # Loop through all guilds and log the startup message
+    for guild in bot.guilds:
+        # Fetch the log channel for the guild from the database
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        c.execute('SELECT log_channel_id FROM settings WHERE guild_id = ?', (guild.id,))
+        result = c.fetchone()
+        conn.close()
+
+        if result:
+            log_channel_id = result[0]
+            log_channel = guild.get_channel(log_channel_id)
+
+            if log_channel:
+                await log_action(startup_message, guild, log_channel)
+            else:
+                print(f"Log channel not found in guild: {guild.name}")
         else:
-            print("Log channel not found!")
-            
+            print(f"Log channel not set for guild: {guild.name}")
+
+
+
+# Command to set log channel
+@bot.tree.command(name="setlogchannel", description="Set the channel for logging messages.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_log_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    # Set the log channel for the guild in the database
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('''INSERT OR REPLACE INTO settings (guild_id, log_channel_id) VALUES (?, ?)''', 
+              (interaction.guild.id, channel.id))
+    conn.commit()
+    conn.close()
+
+    await interaction.response.send_message(
+        f"Log channel has been set to {channel.mention}.", ephemeral=True
+    )
+    
+    # Log the action of setting the log channel
+    await log_action(f"Log channel has been set to {channel.mention} by {interaction.user}.", interaction.guild, interaction.channel)
+
+@bot.event
+async def on_ready():
+    # Set the bot's status to DND
+    await bot.change_presence(status=discord.Status.dnd, activity=None)
+    print(f'We have logged in as {bot.user}')
+
 @bot.tree.command(name="activity", description="Change the bot's activity")
 @app_commands.describe(
     activity_type="The type of activity (playing, listening, watching, streaming)", 
@@ -144,9 +257,13 @@ async def on_ready():
     stream_url="The URL for streaming (required for 'streaming' activity)"
 )
 async def set_activity(interaction: discord.Interaction, activity_type: str, activity_name: str, stream_url: str = None):
+    # Check if the user is authorized
+    if interaction.user.id != 722036964584587284 :  # Replace with your actual user ID
+        await interaction.response.send_message("You are not authorized to use this command.", ephemeral=True)
+        return
+
     activity = None
 
-    # Match the activity types
     if activity_type.lower() == "playing":
         activity = discord.Game(name=activity_name)
     elif activity_type.lower() == "listening":
@@ -155,30 +272,26 @@ async def set_activity(interaction: discord.Interaction, activity_type: str, act
         activity = discord.Activity(type=discord.ActivityType.watching, name=activity_name)
     elif activity_type.lower() == "streaming":
         if not stream_url:
-            await interaction.response.send_message(
-                "You must provide a streaming URL for the 'streaming' activity type.", ephemeral=True
-            )
+            await interaction.response.send_message("You must provide a streaming URL for the 'streaming' activity type.", ephemeral=True)
             return
         activity = discord.Streaming(name=activity_name, url=stream_url)
     else:
-        await interaction.response.send_message(
-            "Invalid activity type! Use 'playing', 'listening', 'watching', or 'streaming'.", 
-            ephemeral=True
-        )
+        await interaction.response.send_message("Invalid activity type! Use 'playing', 'listening', 'watching', or 'streaming'.", ephemeral=True)
         return
 
-    # Update the bot's presence
-    try:
-        await bot.change_presence(activity=activity)
-        await interaction.response.send_message(
-            f"Bot activity changed to {activity_type} {activity_name}!", ephemeral=True
-        )
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute('''INSERT OR REPLACE INTO activity_settings (guild_id, activity_type, activity_name, stream_url) VALUES (?, ?, ?, ?)''', 
+              (interaction.guild.id, activity_type, activity_name, stream_url))
+    conn.commit()
+    conn.close()
 
-        # Log the activity change
-        await log_action(f"{interaction.user} changed the bot's activity to {activity_type} {activity_name}.", interaction.guild, interaction.channel)
-
-    except Exception as e:
-        await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
+    # Set the bot's activity while ensuring the status remains DND
+    await bot.change_presence(status=discord.Status.dnd, activity=activity)
+    await interaction.response.send_message(f"Bot activity changed to {activity_type} {activity_name}!", ephemeral=True)
+    
+    # Log the action
+    await log_action(f"{interaction.user} changed the bot's activity to {activity_type} {activity_name} in {interaction.guild.name}.", interaction.guild, interaction.channel)
 
 # Event that triggers when a member joins
 @bot.event
@@ -197,9 +310,6 @@ async def on_member_join(member: discord.Member):
             await member.send(f"Welcome {member.mention} to {member.guild.name} \n Have fun in exploring the server \n Any doubt dont frgt to contact admins.👻")
             # Log the action of sending the welcome message
             await log_action(f"Sent welcome message to {member.mention} in {welcome_channel.mention}.", member.guild, welcome_channel)
-async def on_ready():
-    await bot.tree.sync()
-    print(f"Bot is ready and commands synced!")
 
 # Command to set welcome channel
 @bot.tree.command(name="setwelcomechannel", description="Set the channel for welcome messages.")
@@ -232,29 +342,6 @@ async def set_welcome_channel_error(interaction: discord.Interaction, error):
 async def help_command(interaction: discord.Interaction):
     await interaction.response.send_message("Available commands:/setwelcomechannel,/setverifyrole,setverifychannel, /starttimer, /sourcecode, /hello, /activity, /news, /image, /message, etc.")
     await log_action(f"{interaction.user} accessed the help menu.", interaction.guild, interaction.channel)
-
-# Command to get the bot's source code
-@bot.tree.command(name="sourcecode", description="Get the bot's source code")
-async def source_code(interaction: discord.Interaction):
-    try:
-        file_path = os.path.abspath("E:\\Program\\Orbit\\bot.py")  # Update with your file path
-        if os.path.isfile(file_path):
-            await interaction.response.send_message(
-                content="Here is the bot's source code:",
-                file=discord.File(file_path),
-                ephemeral=True
-            )
-            await log_action(f"Source code requested by {interaction.user}.", interaction.guild, interaction.channel)
-        else:
-            await interaction.response.send_message(
-                "The source code file could not be found.",
-                ephemeral=True
-            )
-    except Exception as e:
-        await interaction.response.send_message(
-            f"Failed to fetch the source code: {e}",
-            ephemeral=True
-        )
 
 # Command to set verifying channel
 @bot.tree.command(name="setverifychannel", description="Set the channel for verifying messages.")
